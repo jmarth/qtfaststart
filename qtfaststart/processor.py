@@ -8,6 +8,9 @@ import logging
 import os
 import struct
 import collections
+import xbmc
+import xbmcgui
+from koditorrent import plugin
 
 import io
 
@@ -20,8 +23,6 @@ from qtfaststart.exceptions import UnsupportedFormatError
 from qtfaststart.exceptions import FastStartException
 
 CHUNK_SIZE = 8192
-
-log = logging.getLogger("qtfaststart")
 
 # Older versions of Python require this to be defined
 if not hasattr(os, 'SEEK_CUR'):
@@ -65,7 +66,7 @@ def get_index(datastream):
 
         The tuple elements will be in the order that they appear in the file.
     """
-    log.debug("Getting index of top level atoms...")
+    plugin.log.debug("Getting index of top level atoms...")
 
     index = list(_read_atoms(datastream))
     _ensure_valid_index(index)
@@ -80,7 +81,7 @@ def _read_atoms(datastream):
     while datastream:
         try:
             atom = _read_atom_ex(datastream)
-            log.debug("%s: %s" % (atom.name, atom.size))
+            plugin.log.debug("%s: %s" % (atom.name, atom.size))
         except:
             break
 
@@ -109,8 +110,8 @@ def _ensure_valid_index(index):
     for key in ["moov", "mdat"]:
         if key not in top_level_atoms:
             msg = "%s atom not found, is this a valid MOV/MP4 file?" % key
-            log.warn(msg)
-            raise MalformedFileError(msg)
+            plugin.log.warn(msg)
+            return False
 
 
 def find_atoms(size, datastream):
@@ -141,8 +142,9 @@ def _find_atoms_ex(parent_atom, datastream):
             atom = _read_atom_ex(datastream)
         except:
             msg = "Error reading next atom!"
-            log.exception(msg)
-            raise MalformedFileError(msg)
+            plugin.log.exception(msg)
+            yield False
+            return
 
         if atom.name in ["trak", "mdia", "minf", "stbl"]:
             # Known ancestor atom of stco or co64, search within it!
@@ -192,7 +194,8 @@ def process(infilename, outfilename, limit=float('inf'), to_end=False,
 
     # Get the top level atom index
     index = get_index(datastream)
-
+    
+    moov_pos = 999999
     mdat_pos = 999999
     free_size = 0
 
@@ -207,14 +210,17 @@ def process(infilename, outfilename, limit=float('inf'), to_end=False,
         elif atom.name == "free" and atom.position < mdat_pos and cleanup:
             # This free atom is before the mdat!
             free_size += atom.size
-            log.info("Removing free atom at %d (%d bytes)" %
+            plugin.log.info("Removing free atom at %d (%d bytes)" %
                     (atom.position, atom.size))
         elif (atom.name == "\x00\x00\x00\x00" and atom.position < mdat_pos):
             # This is some strange zero atom with incorrect size
             free_size += 8
-            log.info("Removing strange zero atom at %s (8 bytes)" %
+            plugin.log.info("Removing strange zero atom at %s (8 bytes)" %
                     atom.position)
-
+            
+    if(moov_pos == 999999):
+        return False
+    
     # Offset to shift positions
     offset = - free_size
     if moov_pos < mdat_pos:
@@ -229,26 +235,27 @@ def process(infilename, outfilename, limit=float('inf'), to_end=False,
     if offset == 0:
         # No free atoms to process and moov is correct, we are done!
         msg = "This file appears to already be setup!"
-        log.error(msg)
-        raise FastStartSetupError(msg)
+        plugin.log.error(msg)
+        plugin.log.info("%s"%msg)
+        return True
 
     # Check for compressed moov atom
     is_compressed = _moov_is_compressed(datastream, moov_atom)
     if is_compressed:
         msg = "Movies with compressed headers are not supported"
-        log.error(msg)
-        raise UnsupportedFormatError(msg)
+        plugin.log.error(msg)
+        return False
 
     # read and fix moov
     moov = _patch_moov(datastream, moov_atom, offset)
 
-    log.info("Writing output...")
+    plugin.log.info("Writing output...")
     outfile = open(outfilename, "wb")
 
     # Write ftype
     for atom in index:
         if atom.name == "ftyp":
-            log.debug("Writing ftyp... (%d bytes)" % atom.size)
+            plugin.log.debug("Writing ftyp... (%d bytes)" % atom.size)
             datastream.seek(atom.position)
             outfile.write(datastream.read(atom.size))
  
@@ -262,7 +269,7 @@ def process(infilename, outfilename, limit=float('inf'), to_end=False,
     
     atoms = [item for item in index if item.name not in skip_atom_types]
     for atom in atoms:
-        log.debug("Writing %s... (%d bytes)" % (atom.name, atom.size))
+        plugin.log.debug("Writing %s... (%d bytes)" % (atom.name, atom.size))
         datastream.seek(atom.position)
 
         # for compatability, allow '0' to mean no limit
@@ -280,12 +287,12 @@ def process(infilename, outfilename, limit=float('inf'), to_end=False,
     try:
         shutil.copymode(infilename, outfilename)
     except:
-        log.warn("Could not copy file permissions!")
+        plugin.log.warn("Could not copy file permissions!")
 
 def _write_moov(moov, outfile):
     # Write moov
     bytes = moov.getvalue()
-    log.debug("Writing moov... (%d bytes)" % len(bytes))
+    plugin.log.debug("Writing moov... (%d bytes)" % len(bytes))
     outfile.write(bytes)
 
 def _patch_moov(datastream, atom, offset):
@@ -305,7 +312,7 @@ def _patch_moov(datastream, atom, offset):
         # Get number of entries
         version, entry_count = struct.unpack(">2L", moov.read(8))
 
-        log.info("Patching %s with %d entries" % (atom.name, entry_count))
+        plugin.log.info("Patching %s with %d entries" % (atom.name, entry_count))
 
         entries_pos = moov.tell()
 
