@@ -1,4 +1,4 @@
-Quicktime/MP4 Fast Start (Modified for KODItorrent)
+Quicktime/MP4 Fast Start (Modified for KMediaTorrent)
 ------------------------
 Enable streaming and pseudo-streaming of Quicktime and MP4 files by
 moving metadata and offset information to the front of the file.
